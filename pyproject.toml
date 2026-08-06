@@ -1,0 +1,26 @@
+[project]
+name = "dynaconf-ssm-tenant-loader"
+version = "0.1.0"
+description = "Multi-tenant AWS SSM Parameter Store loader for Dynaconf"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "dynaconf>=3.3",
+    "boto3>=1.43",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1",
+    "moto[ssm]>=5.2",
+    "ruff>=0.16",
+    "mypy-boto3-ssm>=1.43",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
