@@ -1,6 +1,5 @@
-import pytest
-
 import boto3
+import pytest
 from dynaconf import Dynaconf
 from moto import mock_aws
 
