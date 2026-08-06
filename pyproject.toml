@@ -1,6 +1,6 @@
 [project]
 name = "dynaconf-ssm-tenant-loader"
-version = "0.1.0"
+version = "1.0.0"
 description = "Multi-tenant AWS SSM Parameter Store loader for Dynaconf"
 readme = "README.md"
 license = "MIT"
