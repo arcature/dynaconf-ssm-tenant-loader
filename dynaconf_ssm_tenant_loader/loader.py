@@ -25,7 +25,7 @@ from . import generate_loader_identifier
 from .util import pull_from_env_or_obj, slashes_to_dict
 
 if t.TYPE_CHECKING:
-    from mypy_boto3_ssm.client import SSMClient
+    from types_boto3_ssm import SSMClient
 
 
 logger = logging.getLogger("dynaconf.ssm_tenant_loader")
