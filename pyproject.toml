@@ -15,7 +15,8 @@ dev = [
     "pytest>=9.1",
     "moto[ssm]>=5.2",
     "ruff>=0.16",
-    "mypy-boto3-ssm>=1.43",
+    "types-boto3[ssm]>=1.43.66",
+    "pyright>=1.1.411",
 ]
 
 [build-system]
@@ -24,3 +25,11 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.pyright]
+
+include = ["dynaconf_ssm_tenant_loader"]
+useLibraryCodeForTypes = true
+verboseOutput = true
+venvPath = "."
+venv = ".venv"
