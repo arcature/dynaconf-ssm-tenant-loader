@@ -37,7 +37,7 @@ def test_variant_segment_is_interposed_between_tenant_and_env(settings, put_para
 
     assert settings.API_PASSWORD == "sekrit"
 
-    
+
 def test_other_tenant_parameters_are_not_loaded(settings, put_params):
     put_params(
         {

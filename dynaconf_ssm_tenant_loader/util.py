@@ -1,4 +1,3 @@
-#+begin_src python
 """
 Utility functions for the Dynaconf SSM tenant loader.
 """
