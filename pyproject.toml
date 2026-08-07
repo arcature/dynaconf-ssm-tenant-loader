@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "Multi-tenant AWS SSM Parameter Store loader for Dynaconf"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "dynaconf>=3.3",
     "boto3>=1.43",
