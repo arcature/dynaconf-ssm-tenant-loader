@@ -100,6 +100,14 @@ settings files) or in settings:
 | `SSM_ENDPOINT_URL_FOR_DYNACONF` | no | e.g. LocalStack |
 | `SSM_SESSION_FOR_DYNACONF` | no | Custom `boto3.session.Session` kwargs |
 
+
+All three path-segment settings are stripped of surrounding whitespace
+before use, and the normalized value is written back to the settings
+object so `settings.inspect()` agrees with the paths actually queried.
+Internal whitespace is an error rather than a silent miss. Tenant and
+variant must each be a single path segment; the app prefix may span
+several (`acme/team-b`).
+
 ## Tenant isolation via IAM
 
 Each tenant deployment should run under its own IAM role (Lambda execution
@@ -235,9 +243,12 @@ This principal must not be assumable by tenant runtime roles.
   via recursive `GetParametersByPath`, and an explicit `Deny` on a
   child does not reliably block enumeration through an allowed parent.
   Always allow-list leaf paths only, as in the template above.
-- Tenant and environment names become IAM resource ARN segments; keep
-  them free of characters requiring escaping (`a-z0-9-` is a safe set)
-  and never derive them from untrusted input.
+- Tenant and environment names become IAM resource ARN segments. Keep
+  them to `a-z0-9-`, and never derive them from untrusted input. The
+  loader rejects whitespace outright, since a stray space desyncs the
+  path from the grant and surfaces as an empty load rather than an
+  authorization error — but it does not police the rest of the
+  character set.
 - If multiple environments share one AWS account, the `<ENV>` segment
   in the resource ARN is what separates them — a production role
   granted `<ENV>=production` cannot read `staging` parameters, and

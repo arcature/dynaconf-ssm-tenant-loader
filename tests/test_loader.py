@@ -340,3 +340,32 @@ def test_variant_whitespace_is_stripped_before_building_paths(settings, put_para
 
     assert settings.API_KEY == "variant-key"
     assert settings.SSM_PARAMETER_TENANT_VARIANT_FOR_DYNACONF == "v2"
+
+
+def test_tenant_and_prefix_whitespace_is_stripped(settings, put_params):
+    put_params({"/acme/tenants/tenant-a/production/api_key": "tenant-key"})
+    settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", " acme ")
+    settings.set("SSM_PARAMETER_TENANT_FOR_DYNACONF", " tenant-a ")
+
+    loader.load(settings, env="production")
+
+    assert settings.API_KEY == "tenant-key"
+    assert settings.SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF == "acme"
+    assert settings.SSM_PARAMETER_TENANT_FOR_DYNACONF == "tenant-a"
+
+
+def test_surrounding_slashes_on_prefix_are_tolerated(settings, put_params):
+    put_params({"/acme/app/production/api_key": "app-key"})
+    settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "/acme/")
+
+    loader.load(settings, env="production")
+
+    assert settings.API_KEY == "app-key"
+
+
+def test_malformed_tenant_raises(settings, ssm):
+    settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
+    settings.set("SSM_PARAMETER_TENANT_FOR_DYNACONF", "tenant a")
+
+    with pytest.raises(ValueError, match="SSM_PARAMETER_TENANT_FOR_DYNACONF"):
+        loader.load(settings, env="production")

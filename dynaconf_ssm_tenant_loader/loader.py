@@ -24,7 +24,7 @@ from botocore.exceptions import BotoCoreError, ClientError, NoRegionError
 from dynaconf.utils.parse_conf import parse_conf_data
 
 from . import generate_loader_identifier
-from .util import pull_from_env_or_obj, slashes_to_dict
+from .util import normalize_path_segment, pull_from_env_or_obj, slashes_to_dict
 
 if t.TYPE_CHECKING:
     from types_boto3_ssm import SSMClient
@@ -72,35 +72,26 @@ def get_client(obj) -> SSMClient:
 
 def validate_variant(variant: str, env_name: str) -> None:
     """
-    Reject variants that would produce an ambiguous path.
+    Reject a variant that would produce an ambiguous path.
+
+    Assumes ``variant`` has already been normalized by
+    :func:`~dynaconf_ssm_tenant_loader.util.normalize_path_segment`.
 
     :param variant: the configured variant segment
-    :param env_name: the environment currently being loaded
-    :raises ValueError: if the variant is empty, contains a slash, or
-        collides with an environment or structural path segment
+    :param env_name: the environment currently being loaded, lowercased
+    :raises ValueError: if the variant collides with an environment or
+        structural path segment
     """
 
-    if not variant.strip():
-        raise ValueError(f"{VARIANT_KEY} must not be empty or whitespace.")
+    normalized = variant.lower()
 
-    if "/" in variant:
-        raise ValueError(
-            f"{VARIANT_KEY} is a single path segment and must not contain '/'."
-        )
-
-    normalized_variant = variant.strip().lower()
-    env_normalized = env_name.strip().lower()
-
-    if (
-        normalized_variant == env_normalized
-        or normalized_variant in RESERVED_VARIANT_NAMES
-    ):
+    if normalized == env_name or normalized in RESERVED_VARIANT_NAMES:
         raise ValueError(
             f"{VARIANT_KEY}={variant!r} collides with an environment or"
             " structural path segment, which would make the parameter"
             " path ambiguous under a recursive read. Choose a variant"
             " name that is not one of"
-            f" {sorted(RESERVED_VARIANT_NAMES | {env_normalized})}."
+            f" {sorted(RESERVED_VARIANT_NAMES | {env_name})}."
         )
 
 
@@ -152,15 +143,11 @@ def load(
     :param validate: whether loaded data is validated when set on ``obj``
     """
 
-    app_prefix = pull_from_env_or_obj(APP_PREFIX_KEY, os.environ, obj)
-    if app_prefix is None:
-        raise ValueError(
-            f"{APP_PREFIX_KEY} must be set in settings or environment"
-            " for the SSM tenant loader to function."
-        )
-
-    tenant = pull_from_env_or_obj(TENANT_KEY, os.environ, obj)
-    variant = pull_from_env_or_obj(VARIANT_KEY, os.environ, obj)
+    app_prefix = _pull_normalized(
+        APP_PREFIX_KEY, obj, required=True, allow_slashes=True
+    )
+    tenant = _pull_normalized(TENANT_KEY, obj)
+    variant = _pull_normalized(VARIANT_KEY, obj)
 
     if variant is not None and tenant is None:
         raise ValueError(
@@ -171,7 +158,6 @@ def load(
     env_name = (env or obj.current_env).strip().lower()
 
     if variant is not None:
-        variant = variant.strip()
         validate_variant(variant, env_name)
 
         # `pull_from_env_or_obj` from above may have stored the raw value, which
@@ -211,6 +197,35 @@ def load(
                 validate=validate,
                 merge=True,
             )
+
+
+def _pull_normalized(
+    key_name: str,
+    obj,
+    *,
+    required: bool = False,
+    allow_slashes: bool = False,
+) -> str | None:
+    """
+    Resolve a path-segment setting from the environment or ``obj``,
+    normalize it, and store the normalized form back on ``obj`` so that
+    introspection matches the paths actually queried.
+    """
+
+    value = pull_from_env_or_obj(key_name, os.environ, obj)
+
+    if value is None:
+        if required:
+            raise ValueError(
+                f"{key_name} must be set in settings or environment"
+                " for the SSM tenant loader to function."
+            )
+        return None
+
+    value = normalize_path_segment(key_name, value, allow_slashes=allow_slashes)
+    obj.set(key_name, value)
+
+    return value
 
 
 def _handle_client_error(
