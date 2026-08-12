@@ -325,7 +325,6 @@ def test_genuine_client_error_still_raises_when_not_silent(
             "GetParametersByPath",
         )
         loader._handle_client_error(exc, base_path, silent)
-        return None
 
     monkeypatch.setattr(loader, "_fetch_all_parameters", boom)
 
