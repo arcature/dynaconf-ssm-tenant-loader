@@ -2,13 +2,15 @@
 Custom Dynaconf loader for multi-tenant configuration in AWS Systems
 Manager Parameter Store.
 
-Path contract:
+Path contract (least to most specific):
 
-    /<app-prefix>/app/<env>/<parameter>
-    /<app-prefix>/tenants/<tenant>[/<variant>]/<env>/<parameter>
+    /<app-prefix>/app/<env>
+    /<app-prefix>/app/<variant>/<env>
+    /<app-prefix>/tenants/<tenant>/<env>
+    /<app-prefix>/tenants/<tenant>/<variant>/<env>
 
-App-family parameters are loaded first; tenant-family parameters are
-loaded second and take precedence on conflicting keys.
+Tiers are loaded in that order and deep-merged, so more specific tiers
+override less specific ones key by key.
 """
 
 from __future__ import annotations
@@ -34,6 +36,31 @@ APP_PREFIX_KEY = "SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF"
 TENANT_KEY = "SSM_PARAMETER_TENANT_FOR_DYNACONF"
 VARIANT_KEY = "SSM_PARAMETER_TENANT_VARIANT_FOR_DYNACONF"
 
+#: Names a variant may not take, because they would collide with a
+#: structural segment or with an environment tier and make a path
+#: ambiguous under recursive reads.
+RESERVED_VARIANT_NAMES = frozenset(
+    {
+        "app",
+        "tenants",
+        "default",
+        "global",
+        "dev",
+        "development",
+        "stage",
+        "staging",
+        "prod",
+        "production",
+        "test",
+        "testing",
+    }
+)
+
+#: Client error codes treated as "this tier is simply not available to
+#: me", rather than as a failure, even when ``silent=False``. With four
+#: tiers, partial IAM grants are the norm.
+ACCESS_DENIED_CODES = frozenset({"AccessDenied", "AccessDeniedException"})
+
 
 def get_client(obj) -> SSMClient:
     """Build a boto3 SSM client from optional loader settings."""
@@ -43,26 +70,61 @@ def get_client(obj) -> SSMClient:
     return session.client(service_name="ssm", endpoint_url=endpoint_url)
 
 
+def validate_variant(variant: str, env_name: str) -> None:
+    """
+    Reject variants that would produce an ambiguous path.
+
+    :param variant: the configured variant segment
+    :param env_name: the environment currently being loaded
+    :raises ValueError: if the variant is empty, contains a slash, or
+        collides with an environment or structural path segment
+    """
+
+    if not variant.strip():
+        raise ValueError(f"{VARIANT_KEY} must not be empty or whitespace.")
+
+    if "/" in variant:
+        raise ValueError(
+            f"{VARIANT_KEY} is a single path segment and must not contain '/'."
+        )
+
+    normalized = variant.strip().lower()
+
+    if normalized == env_name or normalized in RESERVED_VARIANT_NAMES:
+        raise ValueError(
+            f"{VARIANT_KEY}={variant!r} collides with an environment or"
+            " structural path segment, which would make the parameter"
+            " path ambiguous under a recursive read. Choose a variant"
+            " name that is not one of"
+            f" {sorted(RESERVED_VARIANT_NAMES | {env_name})}."
+        )
+
+
 def build_paths(
     app_prefix: str,
     env_name: str,
-    tenant: str | None,
-    variant: str | None,
+    tenant: str | None = None,
+    variant: str | None = None,
 ) -> list[str]:
     """
-    Build the ordered list of SSM base paths to load. App family first,
-    tenant family (if a tenant is configured) second, so tenant values
-    win on merge.
+    Build the ordered list of SSM base paths to load, least specific
+    first, so that later tiers win on merge.
+
+    Family is the dominant dimension: a plain tenant value outranks an
+    app-plus-variant value.
     """
 
-    paths = [f"/{app_prefix}/app/{env_name}"]
+    families = [[app_prefix, "app"]]
 
     if tenant is not None:
-        segments = [app_prefix, "tenants", tenant]
+        families.append([app_prefix, "tenants", tenant])
+
+    paths = []
+
+    for family in families:
+        paths.append("/" + "/".join([*family, env_name]))
         if variant is not None:
-            segments.append(variant)
-        segments.append(env_name)
-        paths.append("/" + "/".join(segments))
+            paths.append("/" + "/".join([*family, variant, env_name]))
 
     return paths
 
@@ -80,7 +142,8 @@ def load(
 
     :param obj: the settings instance
     :param env: settings current env; defaults to ``obj.current_env``
-    :param silent: if False, connection/lookup errors raise
+    :param silent: if False, connection/lookup errors raise; access
+        denials are always soft
     :param key: if defined, load a single key; else load all for ``env``
     :param validate: whether loaded data is validated when set on ``obj``
     """
@@ -101,6 +164,11 @@ def load(
             " variant is only meaningful alongside a tenant."
         )
 
+    env_name = (env or obj.current_env).strip().lower()
+
+    if variant is not None:
+        validate_variant(variant, env_name)
+
     try:
         client = get_client(obj)
     except NoRegionError:
@@ -112,12 +180,11 @@ def load(
             return
         raise
 
-    env_name = (env or obj.current_env).strip().lower()
     paths = build_paths(app_prefix, env_name, tenant, variant)
 
     if key is not None:
-        # Single-key mode: most specific source wins, so search the
-        # tenant family first and fall back to the app family.
+        # Single-key mode addresses one leaf parameter and cannot merge,
+        # so the most specific tier that has it wins outright.
         for path in reversed(paths):
             value = _fetch_single_parameter(client, path, key, silent=silent)
             if value is not None:
@@ -132,7 +199,41 @@ def load(
                 results,
                 loader_identifier=generate_loader_identifier(path, env),
                 validate=validate,
+                merge=True,
             )
+
+
+def _handle_client_error(
+    exc: ClientError,
+    path: str,
+    silent: bool,
+) -> None:
+    """
+    Decide what to do with a ``ClientError`` raised while reading a tier.
+
+    Returns normally if the caller should treat the tier as absent;
+    re-raises otherwise.
+    """
+
+    code = exc.response.get("Error", {}).get("Code")
+
+    if code == "ParameterNotFound":
+        logger.debug("Parameter %s does not exist in AWS SSM.", path)
+        return
+
+    if code in ACCESS_DENIED_CODES:
+        logger.warning(
+            "Access denied reading %s from AWS SSM; skipping this tier."
+            " This is expected when the role is scoped to a subset of"
+            " the path contract.",
+            path,
+        )
+        return
+
+    if silent:
+        return
+
+    raise exc
 
 
 def _fetch_single_parameter(
@@ -149,12 +250,8 @@ def _fetch_single_parameter(
     try:
         response = client.get_parameter(Name=path, WithDecryption=True)
     except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ParameterNotFound":
-            logger.debug("Parameter %s does not exist in AWS SSM.", path)
-            return None
-        if silent:
-            return None
-        raise
+        _handle_client_error(exc, path, silent)
+        return None
     except BotoCoreError:
         if silent:
             return None
@@ -189,10 +286,9 @@ def _fetch_all_parameters(
             for parameter in page["Parameters"]:
                 relative_key = parameter["Name"].removeprefix(base_path).strip("/")
                 data[relative_key] = parameter["Value"]
-    except ClientError:
-        if silent:
-            return None
-        raise
+    except ClientError as exc:
+        _handle_client_error(exc, base_path, silent)
+        return None
     except BotoCoreError:
         if silent:
             return None
