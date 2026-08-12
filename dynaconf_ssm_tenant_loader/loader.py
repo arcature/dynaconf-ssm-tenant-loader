@@ -171,7 +171,13 @@ def load(
     env_name = (env or obj.current_env).strip().lower()
 
     if variant is not None:
+        variant = variant.strip()
         validate_variant(variant, env_name)
+
+        # `pull_from_env_or_obj` from above may have stored the raw value, which
+        # no longer matches the paths used, so store the normalized value back
+        # on the settings object.
+        obj.set(VARIANT_KEY, variant)
 
     try:
         client = get_client(obj)

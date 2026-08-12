@@ -40,3 +40,12 @@ def test_malformed_variants_rejected(variant):
 
 def test_ordinary_variant_accepted():
     validate_variant("v2", "production")
+
+
+def test_variant_case_is_preserved_in_paths():
+    assert build_paths("acme", "production", "tenant-a", "V2") == [
+        "/acme/app/production",
+        "/acme/app/V2/production",
+        "/acme/tenants/tenant-a/production",
+        "/acme/tenants/tenant-a/V2/production",
+    ]

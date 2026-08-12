@@ -328,3 +328,15 @@ def test_genuine_client_error_still_raises_when_not_silent(settings, ssm, monkey
 
     with pytest.raises(ClientError):
         loader.load(settings, env="production", silent=False)
+
+
+def test_variant_whitespace_is_stripped_before_building_paths(settings, put_params):
+    put_params({"/acme/tenants/tenant-a/v2/production/api_key": "variant-key"})
+    settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
+    settings.set("SSM_PARAMETER_TENANT_FOR_DYNACONF", "tenant-a")
+    settings.set("SSM_PARAMETER_TENANT_VARIANT_FOR_DYNACONF", "  v2  ")
+
+    loader.load(settings, env="production")
+
+    assert settings.API_KEY == "variant-key"
+    assert settings.SSM_PARAMETER_TENANT_VARIANT_FOR_DYNACONF == "v2"
