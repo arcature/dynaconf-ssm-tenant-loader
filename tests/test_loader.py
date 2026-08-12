@@ -314,9 +314,7 @@ def test_access_denied_on_one_tier_is_soft_even_when_not_silent(
     assert settings.API_KEY == "tenant-key"
 
 
-def test_genuine_client_error_still_raises_when_not_silent(
-    settings, ssm, monkeypatch
-):
+def test_genuine_client_error_still_raises_when_not_silent(settings, ssm, monkeypatch):
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
 
     def boom(client, base_path, silent=True):
