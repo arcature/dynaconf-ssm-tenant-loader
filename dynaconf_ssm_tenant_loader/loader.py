@@ -88,15 +88,19 @@ def validate_variant(variant: str, env_name: str) -> None:
             f"{VARIANT_KEY} is a single path segment and must not contain '/'."
         )
 
-    normalized = variant.strip().lower()
+    normalized_variant = variant.strip().lower()
+    env_normalized = env_name.strip().lower()
 
-    if normalized == env_name or normalized in RESERVED_VARIANT_NAMES:
+    if (
+        normalized_variant == env_normalized
+        or normalized_variant in RESERVED_VARIANT_NAMES
+    ):
         raise ValueError(
             f"{VARIANT_KEY}={variant!r} collides with an environment or"
             " structural path segment, which would make the parameter"
             " path ambiguous under a recursive read. Choose a variant"
             " name that is not one of"
-            f" {sorted(RESERVED_VARIANT_NAMES | {env_name})}."
+            f" {sorted(RESERVED_VARIANT_NAMES | {env_normalized})}."
         )
 
 
