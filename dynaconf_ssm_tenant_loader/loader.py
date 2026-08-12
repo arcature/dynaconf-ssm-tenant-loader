@@ -146,6 +146,13 @@ def load(
     app_prefix = _pull_normalized(
         APP_PREFIX_KEY, obj, required=True, allow_slashes=True
     )
+
+    if app_prefix is None:
+        raise ValueError(
+            f"{APP_PREFIX_KEY} must be set in settings or environment"
+            " for the SSM tenant loader to function."
+        )
+
     tenant = _pull_normalized(TENANT_KEY, obj)
     variant = _pull_normalized(VARIANT_KEY, obj)
 
