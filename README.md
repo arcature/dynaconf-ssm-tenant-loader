@@ -5,16 +5,72 @@ applications that store secrets in AWS Systems Manager Parameter Store.
 
 ## Path contract
 
-    /<app-prefix>/app/<env>/<parameter>
-    /<app-prefix>/tenants/<tenant>[/<variant>]/<env>/<parameter>
+    /<app-prefix>/app/<env>
+    /<app-prefix>/app/<variant>/<env>
+    /<app-prefix>/tenants/<tenant>/<env>
+    /<app-prefix>/tenants/<tenant>/<variant>/<env>
+
+Tiers are read in that order — least specific first — and **deep-merged**,
+so a more specific tier overrides a less specific one key by key rather
+than wholesale.
 
 - The **app family** holds values shared by every tenant deployment.
 - The **tenant family** holds values specific to one tenant.
-- Tenant values are loaded second and **override** app values on conflict.
 - The optional **variant** segment is an opaque deployment discriminator
-  (e.g. an upstream API major version) interposed between tenant and env.
+  (e.g. an upstream API major version) interposed between the family and
+  the env. It applies to both families, so shared-but-variant-specific
+  values have a home.
+- **Family is the dominant dimension**: a plain tenant value outranks an
+  app-plus-variant value. Variant refines a family; it does not escape it.
+- A tier that does not exist is simply skipped, so a variant deployment
+  still inherits everything from the non-variant tenant and app tiers.
 - Deeper segments become nested settings:
   `/acme/app/production/database/host` → `settings.DATABASE.host`.
+
+### Merge semantics
+
+Deep merge applies per key, at every depth. Given:
+
+    /acme/app/production/database/host                       = db.internal
+    /acme/app/production/database/port                       = @int 5432
+    /acme/app/production/database/pool/size                  = @int 5
+    /acme/tenants/tenant-a/production/database/host          = db.tenant-a.internal
+    /acme/tenants/tenant-a/v2/production/database/pool/size  = @int 20
+
+a deployment with `tenant=tenant-a`, `variant=v2` resolves to:
+
+```python
+settings.DATABASE.host == "db.tenant-a.internal"  # tenant wins
+settings.DATABASE.port == 5432  # inherited from app
+settings.DATABASE.pool.size == 20  # variant wins, nested
+```
+
+Lists **accumulate** rather than replace, per Dynaconf's merge rules: a
+list-valued parameter present at two tiers yields the concatenation. Use
+Dynaconf's [`@reset`
+marker](https://www.dynaconf.com/merging/) on the more specific value to
+override instead of extend.
+
+### Variant naming
+
+A variant must be a single path segment and must not collide with an
+environment name or a structural segment, since
+`/acme/tenants/t/staging/production/...` is ambiguous with the `staging`
+env tier. The loader rejects, case-insensitively: `app`, `tenants`,
+`default`, `global`, `dev`, `development`, `stage`, `staging`, `prod`,
+`production`, `test`, `testing`, and the environment being loaded.
+
+`SSM_PARAMETER_TENANT_VARIANT_FOR_DYNACONF` still requires
+`SSM_PARAMETER_TENANT_FOR_DYNACONF` to be set, even though it now also
+affects app-family paths — a variant is a property of a tenant
+deployment.
+
+### Single-key loads
+
+`load(..., key="foo")` addresses one leaf parameter via `GetParameter`
+and cannot merge: the most specific tier that has it wins outright. It
+therefore cannot retrieve a subtree — `key="database"` is a miss even if
+`database/host` exists.
 
 ## Usage
 
@@ -44,6 +100,14 @@ settings files) or in settings:
 | `SSM_ENDPOINT_URL_FOR_DYNACONF` | no | e.g. LocalStack |
 | `SSM_SESSION_FOR_DYNACONF` | no | Custom `boto3.session.Session` kwargs |
 
+
+All three path-segment settings are stripped of surrounding whitespace
+before use, and the normalized value is written back to the settings
+object so `settings.inspect()` agrees with the paths actually queried.
+Internal whitespace is an error rather than a silent miss. Tenant and
+variant must each be a single path segment; the app prefix may span
+several (`acme/team-b`).
+
 ## Tenant isolation via IAM
 
 Each tenant deployment should run under its own IAM role (Lambda execution
@@ -71,7 +135,9 @@ Substitute `<REGION>`, `<ACCOUNT_ID>`, `<APP_PREFIX>`, `<TENANT>`,
             ],
             "Resource": [
                 "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<APP_PREFIX>/app/<ENV>",
-                "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<APP_PREFIX>/app/<ENV>/*"
+                "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<APP_PREFIX>/app/<ENV>/*",
+                "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<APP_PREFIX>/app/<VARIANT>/<ENV>",
+                "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<APP_PREFIX>/app/<VARIANT>/<ENV>/*"
             ]
         },
         {
@@ -83,6 +149,8 @@ Substitute `<REGION>`, `<ACCOUNT_ID>`, `<APP_PREFIX>`, `<TENANT>`,
                 "ssm:GetParametersByPath"
             ],
             "Resource": [
+                "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<APP_PREFIX>/tenants/<TENANT>/<ENV>",
+                "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<APP_PREFIX>/tenants/<TENANT>/<ENV>/*",
                 "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<APP_PREFIX>/tenants/<TENANT>/<VARIANT>/<ENV>",
                 "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<APP_PREFIX>/tenants/<TENANT>/<VARIANT>/<ENV>/*"
             ]
@@ -91,9 +159,24 @@ Substitute `<REGION>`, `<ACCOUNT_ID>`, `<APP_PREFIX>`, `<TENANT>`,
 }
 ```
 
-Both the bare path and the `/*` glob are listed: `GetParametersByPath`
-authorizes against the path argument itself, while `GetParameter` on a
-child authorizes against the individual parameter ARN.
+Omit the `<VARIANT>` ARN pairs entirely if you do not use variants.
+
+Both the bare path and the `/*` glob are listed for each tier:
+`GetParametersByPath` authorizes against the path argument itself, while
+`GetParameter` on a child authorizes against the individual parameter ARN.
+
+**Partial grants are fine.** The loader probes every tier in the
+contract, so a role scoped to a subset will see `AccessDeniedException`
+on the rest. Those denials are logged at `WARNING` and skipped — they
+never fail the load, even with `silent=False`, since with four tiers a
+narrow grant is the normal case rather than a misconfiguration. Genuine
+errors (throttling, connectivity) still propagate when `silent=False`.
+Denials are indistinguishable from absent tiers in effect, so if a value
+mysteriously fails to appear, check the warnings before checking the
+parameter names.
+
+Note also that a configured variant doubles the number of
+`GetParametersByPath` calls per load, from two to four.
 
 ### KMS permissions for SecureString parameters
 
@@ -160,13 +243,20 @@ This principal must not be assumable by tenant runtime roles.
   via recursive `GetParametersByPath`, and an explicit `Deny` on a
   child does not reliably block enumeration through an allowed parent.
   Always allow-list leaf paths only, as in the template above.
-- Tenant and environment names become IAM resource ARN segments; keep
-  them free of characters requiring escaping (`a-z0-9-` is a safe set)
-  and never derive them from untrusted input.
+- Tenant and environment names become IAM resource ARN segments. Keep
+  them to `a-z0-9-`, and never derive them from untrusted input. The
+  loader rejects whitespace outright, since a stray space desyncs the
+  path from the grant and surfaces as an empty load rather than an
+  authorization error — but it does not police the rest of the
+  character set.
 - If multiple environments share one AWS account, the `<ENV>` segment
   in the resource ARN is what separates them — a production role
   granted `<ENV>=production` cannot read `staging` parameters, and
   vice versa.
+- **Never grant a runtime role `/<APP_PREFIX>/tenants/<TENANT>`** (the
+  bare tenant path, without an env or variant segment). Recursive reads
+  from there cross environment boundaries, defeating the `<ENV>`
+  separation described above.
 
 
 ## Development
@@ -186,6 +276,10 @@ interpreter, `uv`, and `ruff`, and syncs the environment on shell entry:
 ```sh
 nix develop
 ```
+
+The flake pins `uv` to the Nix-provided interpreter
+(`UV_PYTHON_DOWNLOADS=never`), so no standalone Python builds are downloaded.
+The virtual environment is created in-project at `.venv/`.
 
 ### direnv
 
@@ -296,42 +390,3 @@ place.
    uv run --with dynaconf-ssm-tenant-loader --no-project \
        python -c "import dynaconf_ssm_tenant_loader as m; print(m.__version__)"
    ```
-## Testing
-
-Tests use [`moto`](https://github.com/getmoto/moto) to mock AWS SSM — no
-Docker, LocalStack, or AWS account is required.
-
-### With uv
-
-```sh
-uv sync
-uv run pytest
-```
-
-### With Nix
-
-A `flake.nix` is provided. It supplies a pinned Python interpreter, `uv`,
-and `ruff`, and syncs the project environment on shell entry:
-
-```sh
-# Enter a development shell (runs `uv sync` automatically):
-nix develop
-uv run pytest
-
-# Or run the test suite directly, without entering a shell:
-nix run .#test
-
-# Pass pytest arguments through:
-nix run .#test -- -k tenant -v
-```
-
-The flake pins `uv` to the Nix-provided interpreter
-(`UV_PYTHON_DOWNLOADS=never`), so no standalone Python builds are
-downloaded. The virtual environment is created in-project at `.venv/`.
-
-If you use [direnv](https://direnv.net/), a one-line `.envrc` gets you
-automatic shell activation:
-
-```sh
-echo "use flake" > .envrc && direnv allow
-```
