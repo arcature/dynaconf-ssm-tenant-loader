@@ -181,12 +181,60 @@ Note also that a configured variant doubles the number of
 
 ### KMS permissions for SecureString parameters
 
-*(unchanged)*
+`SecureString` values encrypted with the AWS-managed key (`aws/ssm`)
+require no extra statement. If you use a customer-managed KMS key, the
+role also needs:
+
+```json
+{
+    "Sid": "DecryptSecureStrings",
+    "Effect": "Allow",
+    "Action": "kms:Decrypt",
+    "Resource": "arn:aws:kms:<REGION>:<ACCOUNT_ID>:key/<KEY_ID>"
+}
+```
+
+For defense in depth, encrypt each tenant's parameters with a
+**per-tenant** customer-managed key and scope each role's `kms:Decrypt`
+to its own key. Then even a misconfigured SSM grant yields only
+ciphertext.
 
 ### Writer/administration policy
 
-*(unchanged — the `/<APP_PREFIX>/*` writer grant covers the new layout
-as-is)*
+Runtime roles never write parameters. Seeding and rotation should be
+done by a separate CI or administrative principal, e.g.:
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "ManageAppParameterTree",
+            "Effect": "Allow",
+            "Action": [
+                "ssm:PutParameter",
+                "ssm:DeleteParameter",
+                "ssm:DeleteParameters",
+                "ssm:GetParameter",
+                "ssm:GetParameters",
+                "ssm:GetParametersByPath",
+                "ssm:DescribeParameters",
+                "ssm:AddTagsToResource",
+                "ssm:ListTagsForResource"
+            ],
+            "Resource": "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<APP_PREFIX>/*"
+        }
+    ]
+}
+```
+
+This principal must not be assumable by tenant runtime roles.
+
+> **Note:** `ssm:DescribeParameters` only supports `Resource: "*"` in
+> some contexts and reveals parameter *names* (not values) across the
+> account. It is not required by this loader at runtime — the loader
+> uses only `GetParameter` and `GetParametersByPath` — so leave it off
+> runtime roles.
 
 ### Warnings
 
