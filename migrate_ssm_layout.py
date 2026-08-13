@@ -71,7 +71,7 @@ def classify(name: str, prefix: str, target_prefix: str, envs: set[str]):
     """Map an old full parameter name to its new full name, or raise ValueError."""
     segments = name.strip("/").split("/")
     prefix_segments = prefix.strip("/").split("/")
-    rest = segments[len(prefix_segments):]
+    rest = segments[len(prefix_segments) :]
 
     if not rest:
         raise ValueError("bare prefix parameter")
@@ -124,7 +124,11 @@ def build_plan(ssm: CountingClient, args) -> Plan:
     for page in ssm.paginate(
         "describe_parameters",
         ParameterFilters=[
-            {"Key": "Path", "Option": "Recursive", "Values": [f"/{args.prefix.strip('/')}"]}
+            {
+                "Key": "Path",
+                "Option": "Recursive",
+                "Values": [f"/{args.prefix.strip('/')}"],
+            }
         ],
     ):
         for param in page["Parameters"]:
@@ -139,7 +143,7 @@ def build_plan(ssm: CountingClient, args) -> Plan:
         for param in page["Parameters"]:
             name = param["Name"]
             try:
-                new_name, env, tier = classify(
+                new_name, _env, _tier = classify(
                     name, args.prefix, args.target_prefix, envs
                 )
             except ValueError as exc:
@@ -171,7 +175,9 @@ def build_plan(ssm: CountingClient, args) -> Plan:
             colliding = [m["old"] for m in plan.migrations if m["new"] == new_name]
             plan.migrations = [m for m in plan.migrations if m["new"] != new_name]
             for old in colliding:
-                plan.skipped.append((old, f"collision: multiple sources map to {new_name}"))
+                plan.skipped.append(
+                    (old, f"collision: multiple sources map to {new_name}")
+                )
 
     return plan
 
@@ -197,7 +203,9 @@ def execute(ssm: CountingClient, plan: Plan, args) -> tuple[int, int]:
         except ClientError as exc:
             if exc.response["Error"]["Code"] == "ParameterAlreadyExists":
                 already += 1
-                plan.skipped.append((m["old"], f"target {m['new']} exists (use --overwrite)"))
+                plan.skipped.append(
+                    (m["old"], f"target {m['new']} exists (use --overwrite)")
+                )
             else:
                 raise
     return written, already
@@ -206,15 +214,25 @@ def execute(ssm: CountingClient, plan: Plan, args) -> tuple[int, int]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prefix", required=True, help="old layout root, e.g. arc")
-    parser.add_argument("--target-prefix", default=None,
-                        help="new layout root (default: same as --prefix)")
-    parser.add_argument("--envs", required=True,
-                        type=lambda s: [e.strip() for e in s.split(",") if e.strip()],
-                        help="comma-separated authoritative env names, e.g. qa,staging,production")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="read and classify, print the plan, write nothing")
-    parser.add_argument("--overwrite", action="store_true",
-                        help="overwrite existing target parameters")
+    parser.add_argument(
+        "--target-prefix",
+        default=None,
+        help="new layout root (default: same as --prefix)",
+    )
+    parser.add_argument(
+        "--envs",
+        required=True,
+        type=lambda s: [e.strip() for e in s.split(",") if e.strip()],
+        help="comma-separated authoritative env names, e.g. qa,staging,production",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="read and classify, print the plan, write nothing",
+    )
+    parser.add_argument(
+        "--overwrite", action="store_true", help="overwrite existing target parameters"
+    )
     parser.add_argument("--endpoint-url", default=None)
     parser.add_argument("--region", default=None)
     args = parser.parse_args()
@@ -232,8 +250,10 @@ def main() -> int:
     plan = build_plan(ssm, args)
 
     # ---- Report the plan ----
-    print(f"{'DRY RUN — ' if args.dry_run else ''}migration plan"
-          f" (/{args.prefix.strip('/')} -> /{args.target_prefix.strip('/')}):\n")
+    print(
+        f"{'DRY RUN — ' if args.dry_run else ''}migration plan"
+        f" (/{args.prefix.strip('/')} -> /{args.target_prefix.strip('/')}):\n"
+    )
 
     for m in plan.migrations:
         print(f"  PUT  {m['new']}")
