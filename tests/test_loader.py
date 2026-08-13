@@ -355,6 +355,26 @@ def test_genuine_client_error_still_raises_when_not_silent(settings, ssm, monkey
         loader.load(settings, env="production", silent=False)
 
 
+def test_env_whitespace_is_stripped(settings, put_params):
+    put_params({"/acme/production/app/default/api_key": "app-key"})
+    settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
+
+    loader.load(settings, env="  PRODUCTION  ")
+
+    assert settings.API_KEY == "app-key"
+
+
+def test_env_with_slash_raises(settings, ssm):
+    """
+    A '/' in the env would address a different tree — and potentially a
+    different IAM boundary — so it is an error, not a normalization.
+    """
+    settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
+
+    with pytest.raises(ValueError, match="env"):
+        loader.load(settings, env="production/staging")
+
+
 def test_variant_whitespace_is_stripped_before_building_paths(settings, put_params):
     put_params({"/acme/production/tenants/tenant-a/v2/api_key": "variant-key"})
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")

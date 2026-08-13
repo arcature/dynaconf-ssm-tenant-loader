@@ -151,7 +151,7 @@ def load(
             " variant is only meaningful alongside a tenant."
         )
 
-    env_name = (env or obj.current_env).strip().lower()
+    env_name = normalize_path_segment("env", (env or obj.current_env)).lower()
 
     if variant is not None:
         validate_variant(variant)
