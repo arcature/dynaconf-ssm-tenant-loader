@@ -32,7 +32,7 @@ def test_no_tier_is_a_path_prefix_of_another():
     paths = build_paths("acme", "production", "tenant-a", "v2")
     for path in paths:
         for other in paths:
-            if path is not other:
+            if path != other:
                 assert not other.startswith(path + "/")
 
 
