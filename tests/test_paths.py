@@ -5,49 +5,64 @@ from dynaconf_ssm_tenant_loader.util import normalize_path_segment
 
 
 def test_app_only():
-    assert build_paths("acme", "production") == ["/acme/app/production"]
+    assert build_paths("acme", "production") == ["/acme/production/app/default"]
 
 
 def test_tenant_without_variant():
     assert build_paths("acme", "production", "tenant-a") == [
-        "/acme/app/production",
-        "/acme/tenants/tenant-a/production",
+        "/acme/production/app/default",
+        "/acme/production/tenants/tenant-a/default",
     ]
 
 
 def test_variant_adds_tiers_without_replacing_them():
     assert build_paths("acme", "production", "tenant-a", "v2") == [
-        "/acme/app/production",
-        "/acme/app/v2/production",
-        "/acme/tenants/tenant-a/production",
-        "/acme/tenants/tenant-a/v2/production",
+        "/acme/production/app/default",
+        "/acme/production/app/v2",
+        "/acme/production/tenants/tenant-a/default",
+        "/acme/production/tenants/tenant-a/v2",
     ]
 
 
-def test_validate_variant_assumes_normalized_input():
-    """Whitespace stripping is the caller's job; this is a shape-blind check."""
-    validate_variant("v2", "production")  # no raise
+def test_no_tier_is_a_path_prefix_of_another():
+    """
+    The ``default`` leaf exists precisely so that a recursive read of
+    one tier can never swallow a sibling variant tier.
+    """
+    paths = build_paths("acme", "production", "tenant-a", "v2")
+    for path in paths:
+        for other in paths:
+            if path is not other:
+                assert not other.startswith(path + "/")
 
 
 @pytest.mark.parametrize(
     "variant",
-    ["production", "PRODUCTION", "staging", "default", "global", "app", "tenants"],
+    ["default", "DEFAULT", "app", "tenants", "Tenants"],
 )
 def test_reserved_variants_rejected(variant):
     with pytest.raises(ValueError, match="TENANT_VARIANT"):
-        validate_variant(variant, "production")
+        validate_variant(variant)
 
 
-def test_ordinary_variant_accepted():
-    validate_variant("v2", "production")
+@pytest.mark.parametrize(
+    "variant",
+    ["v2", "pr-1234", "production", "staging", "global"],
+)
+def test_non_structural_variants_accepted(variant):
+    """
+    Env names are no longer reserved: with the environment ahead of
+    the variant slot, they cannot make a path ambiguous.
+    """
+    validate_variant(variant)  # no raise
 
 
 def test_variant_case_is_preserved_in_paths():
     assert build_paths("acme", "production", "tenant-a", "V2") == [
-        "/acme/app/production",
-        "/acme/app/V2/production",
-        "/acme/tenants/tenant-a/production",
-        "/acme/tenants/tenant-a/V2/production",
+        "/acme/production/app/default",
+        "/acme/production/app/V2",
+        "/acme/production/tenants/tenant-a/default",
+        "/acme/production/tenants/tenant-a/V2",
     ]
 
 
