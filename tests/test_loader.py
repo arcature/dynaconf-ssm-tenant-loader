@@ -5,7 +5,7 @@ from dynaconf_ssm_tenant_loader import loader
 
 
 def test_app_family_loads_without_a_tenant(settings, put_params):
-    put_params({"/acme/app/production/flask_secret_key": "app-secret"})
+    put_params({"/acme/production/app/default/flask_secret_key": "app-secret"})
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
 
     loader.load(settings, env="production")
@@ -16,8 +16,8 @@ def test_app_family_loads_without_a_tenant(settings, put_params):
 def test_tenant_value_overrides_app_value(settings, put_params):
     put_params(
         {
-            "/acme/app/production/api_key": "shared-key",
-            "/acme/tenants/tenant-a/production/api_key": "tenant-a-key",
+            "/acme/production/app/default/api_key": "shared-key",
+            "/acme/production/tenants/tenant-a/default/api_key": "tenant-a-key",
         }
     )
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
@@ -28,8 +28,8 @@ def test_tenant_value_overrides_app_value(settings, put_params):
     assert settings.API_KEY == "tenant-a-key"
 
 
-def test_variant_segment_is_interposed_between_tenant_and_env(settings, put_params):
-    put_params({"/acme/tenants/tenant-a/v2/production/api_password": "sekrit"})
+def test_variant_tier_loads(settings, put_params):
+    put_params({"/acme/production/tenants/tenant-a/v2/api_password": "sekrit"})
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
     settings.set("SSM_PARAMETER_TENANT_FOR_DYNACONF", "tenant-a")
     settings.set("SSM_PARAMETER_TENANT_VARIANT_FOR_DYNACONF", "v2")
@@ -42,8 +42,8 @@ def test_variant_segment_is_interposed_between_tenant_and_env(settings, put_para
 def test_other_tenant_parameters_are_not_loaded(settings, put_params):
     put_params(
         {
-            "/acme/tenants/tenant-a/production/api_key": "tenant-a-key",
-            "/acme/tenants/tenant-b/production/api_key": "tenant-b-key",
+            "/acme/production/tenants/tenant-a/default/api_key": "tenant-a-key",
+            "/acme/production/tenants/tenant-b/default/api_key": "tenant-b-key",
         }
     )
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
@@ -54,8 +54,32 @@ def test_other_tenant_parameters_are_not_loaded(settings, put_params):
     assert settings.API_KEY == "tenant-a-key"
 
 
+def test_variant_parameters_are_not_loaded_without_a_variant(settings, put_params):
+    """
+    A variant tier is a sibling of the ``default`` leaf, not a subtree
+    of it, so a non-variant deployment must not see variant values —
+    neither merged in nor as junk nested keys.
+    """
+    put_params(
+        {
+            "/acme/production/app/default/api_key": "app-key",
+            "/acme/production/app/v2/api_key": "v2-key",
+            "/acme/production/tenants/tenant-a/default/who": "tenant",
+            "/acme/production/tenants/tenant-a/v2/who": "variant",
+        }
+    )
+    settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
+    settings.set("SSM_PARAMETER_TENANT_FOR_DYNACONF", "tenant-a")
+
+    loader.load(settings, env="production")
+
+    assert settings.API_KEY == "app-key"
+    assert settings.WHO == "tenant"
+    assert "V2" not in settings
+
+
 def test_nested_paths_become_nested_dicts(settings, put_params):
-    put_params({"/acme/app/production/database/host": "db.example.com"})
+    put_params({"/acme/production/app/default/database/host": "db.example.com"})
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
 
     loader.load(settings, env="production")
@@ -66,8 +90,8 @@ def test_nested_paths_become_nested_dicts(settings, put_params):
 def test_values_are_toml_coerced(settings, put_params):
     put_params(
         {
-            "/acme/app/production/max_connections": "@int 42",
-            "/acme/app/production/debug": "@bool false",
+            "/acme/production/app/default/max_connections": "@int 42",
+            "/acme/production/app/default/debug": "@bool false",
         }
     )
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
@@ -80,7 +104,7 @@ def test_values_are_toml_coerced(settings, put_params):
 
 def test_secure_strings_are_decrypted(settings, put_params):
     put_params(
-        {"/acme/app/production/stripe_secret_key": "sk_live_abc"},
+        {"/acme/production/app/default/stripe_secret_key": "sk_live_abc"},
         type="SecureString",
     )
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
@@ -93,8 +117,8 @@ def test_secure_strings_are_decrypted(settings, put_params):
 def test_single_key_prefers_tenant_over_app(settings, put_params):
     put_params(
         {
-            "/acme/app/production/webhook_secret": "app-level",
-            "/acme/tenants/tenant-a/production/webhook_secret": "tenant-level",
+            "/acme/production/app/default/webhook_secret": "app-level",
+            "/acme/production/tenants/tenant-a/default/webhook_secret": "tenant-level",
         }
     )
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
@@ -106,7 +130,7 @@ def test_single_key_prefers_tenant_over_app(settings, put_params):
 
 
 def test_single_key_falls_back_to_app_family(settings, put_params):
-    put_params({"/acme/app/production/webhook_secret": "app-level"})
+    put_params({"/acme/production/app/default/webhook_secret": "app-level"})
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
     settings.set("SSM_PARAMETER_TENANT_FOR_DYNACONF", "tenant-a")
 
@@ -135,7 +159,7 @@ def test_variant_without_tenant_raises(settings, ssm):
 
 
 def test_loader_config_is_read_from_environment(settings, put_params, monkeypatch):
-    put_params({"/acme/tenants/tenant-a/production/api_key": "from-env-config"})
+    put_params({"/acme/production/tenants/tenant-a/default/api_key": "from-env-config"})
     monkeypatch.setenv("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
     monkeypatch.setenv("SSM_PARAMETER_TENANT_FOR_DYNACONF", "tenant-a")
 
@@ -145,11 +169,10 @@ def test_loader_config_is_read_from_environment(settings, put_params, monkeypatc
 
 
 def test_variant_tier_falls_back_to_plain_tenant_tier(settings, put_params):
-    """The bug this change fixes."""
     put_params(
         {
-            "/acme/tenants/tenant-a/production/only_at_tenant": "tenant-level",
-            "/acme/tenants/tenant-a/v2/production/only_at_variant": "variant-level",
+            "/acme/production/tenants/tenant-a/default/only_at_tenant": "tenant-level",
+            "/acme/production/tenants/tenant-a/v2/only_at_variant": "variant-level",
         }
     )
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
@@ -165,10 +188,10 @@ def test_variant_tier_falls_back_to_plain_tenant_tier(settings, put_params):
 def test_full_precedence_ladder(settings, put_params):
     put_params(
         {
-            "/acme/app/production/who": "app",
-            "/acme/app/v2/production/who": "app-variant",
-            "/acme/tenants/tenant-a/production/who": "tenant",
-            "/acme/tenants/tenant-a/v2/production/who": "tenant-variant",
+            "/acme/production/app/default/who": "app",
+            "/acme/production/app/v2/who": "app-variant",
+            "/acme/production/tenants/tenant-a/default/who": "tenant",
+            "/acme/production/tenants/tenant-a/v2/who": "tenant-variant",
         }
     )
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
@@ -183,8 +206,8 @@ def test_full_precedence_ladder(settings, put_params):
 def test_family_outranks_variant(settings, put_params):
     put_params(
         {
-            "/acme/app/v2/production/who": "app-variant",
-            "/acme/tenants/tenant-a/production/who": "tenant",
+            "/acme/production/app/v2/who": "app-variant",
+            "/acme/production/tenants/tenant-a/default/who": "tenant",
         }
     )
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
@@ -197,7 +220,7 @@ def test_family_outranks_variant(settings, put_params):
 
 
 def test_app_variant_tier_loads_without_tenant_values(settings, put_params):
-    put_params({"/acme/app/v2/production/upstream_base_url": "https://v2.example.com"})
+    put_params({"/acme/production/app/v2/upstream_base_url": "https://v2.example.com"})
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
     settings.set("SSM_PARAMETER_TENANT_FOR_DYNACONF", "tenant-a")
     settings.set("SSM_PARAMETER_TENANT_VARIANT_FOR_DYNACONF", "v2")
@@ -210,11 +233,13 @@ def test_app_variant_tier_loads_without_tenant_values(settings, put_params):
 def test_nested_dicts_are_deep_merged_across_tiers(settings, put_params):
     put_params(
         {
-            "/acme/app/production/database/host": "db.internal",
-            "/acme/app/production/database/port": "@int 5432",
-            "/acme/app/production/database/pool/size": "@int 5",
-            "/acme/tenants/tenant-a/production/database/host": "db.tenant-a.internal",
-            "/acme/tenants/tenant-a/v2/production/database/pool/size": "@int 20",
+            "/acme/production/app/default/database/host": "db.internal",
+            "/acme/production/app/default/database/port": "@int 5432",
+            "/acme/production/app/default/database/pool/size": "@int 5",
+            "/acme/production/tenants/tenant-a/default/database/host": (
+                "db.tenant-a.internal"
+            ),
+            "/acme/production/tenants/tenant-a/v2/database/pool/size": "@int 20",
         }
     )
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
@@ -231,7 +256,7 @@ def test_nested_dicts_are_deep_merged_across_tiers(settings, put_params):
 def test_reserved_variant_raises(settings, ssm):
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
     settings.set("SSM_PARAMETER_TENANT_FOR_DYNACONF", "tenant-a")
-    settings.set("SSM_PARAMETER_TENANT_VARIANT_FOR_DYNACONF", "staging")
+    settings.set("SSM_PARAMETER_TENANT_VARIANT_FOR_DYNACONF", "default")
 
     with pytest.raises(ValueError, match="TENANT_VARIANT"):
         loader.load(settings, env="production")
@@ -240,9 +265,9 @@ def test_reserved_variant_raises(settings, ssm):
 def test_single_key_prefers_variant_then_tenant_then_app(settings, put_params):
     put_params(
         {
-            "/acme/app/production/webhook_secret": "app-level",
-            "/acme/tenants/tenant-a/production/webhook_secret": "tenant-level",
-            "/acme/tenants/tenant-a/v2/production/webhook_secret": "variant-level",
+            "/acme/production/app/default/webhook_secret": "app-level",
+            "/acme/production/tenants/tenant-a/default/webhook_secret": "tenant-level",
+            "/acme/production/tenants/tenant-a/v2/webhook_secret": "variant-level",
         }
     )
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
@@ -257,8 +282,8 @@ def test_single_key_prefers_variant_then_tenant_then_app(settings, put_params):
 def test_single_key_falls_back_past_missing_variant_tier(settings, put_params):
     put_params(
         {
-            "/acme/app/production/webhook_secret": "app-level",
-            "/acme/tenants/tenant-a/production/webhook_secret": "tenant-level",
+            "/acme/production/app/default/webhook_secret": "app-level",
+            "/acme/production/tenants/tenant-a/default/webhook_secret": "tenant-level",
         }
     )
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
@@ -274,8 +299,8 @@ def test_lists_accumulate_across_tiers(settings, put_params):
     """Documented consequence of Dynaconf's deep merge."""
     put_params(
         {
-            "/acme/app/production/allowed_hosts": '@json ["a.example.com"]',
-            "/acme/tenants/tenant-a/production/allowed_hosts": (
+            "/acme/production/app/default/allowed_hosts": '@json ["a.example.com"]',
+            "/acme/production/tenants/tenant-a/default/allowed_hosts": (
                 '@json ["b.example.com"]'
             ),
         }
@@ -291,14 +316,14 @@ def test_lists_accumulate_across_tiers(settings, put_params):
 def test_access_denied_on_one_tier_is_soft_even_when_not_silent(
     settings, put_params, monkeypatch
 ):
-    put_params({"/acme/tenants/tenant-a/production/api_key": "tenant-key"})
+    put_params({"/acme/production/tenants/tenant-a/default/api_key": "tenant-key"})
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
     settings.set("SSM_PARAMETER_TENANT_FOR_DYNACONF", "tenant-a")
 
     real_fetch = loader._fetch_all_parameters
 
     def fake_fetch(client, base_path, silent=True):
-        if base_path == "/acme/app/production":
+        if base_path == "/acme/production/app/default":
             raise_denied = ClientError(
                 {"Error": {"Code": "AccessDeniedException", "Message": "nope"}},
                 "GetParametersByPath",
@@ -330,8 +355,28 @@ def test_genuine_client_error_still_raises_when_not_silent(settings, ssm, monkey
         loader.load(settings, env="production", silent=False)
 
 
+def test_env_whitespace_is_stripped(settings, put_params):
+    put_params({"/acme/production/app/default/api_key": "app-key"})
+    settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
+
+    loader.load(settings, env="  PRODUCTION  ")
+
+    assert settings.API_KEY == "app-key"
+
+
+def test_env_with_slash_raises(settings, ssm):
+    """
+    A '/' in the env would address a different tree — and potentially a
+    different IAM boundary — so it is an error, not a normalization.
+    """
+    settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
+
+    with pytest.raises(ValueError, match="env"):
+        loader.load(settings, env="production/staging")
+
+
 def test_variant_whitespace_is_stripped_before_building_paths(settings, put_params):
-    put_params({"/acme/tenants/tenant-a/v2/production/api_key": "variant-key"})
+    put_params({"/acme/production/tenants/tenant-a/v2/api_key": "variant-key"})
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "acme")
     settings.set("SSM_PARAMETER_TENANT_FOR_DYNACONF", "tenant-a")
     settings.set("SSM_PARAMETER_TENANT_VARIANT_FOR_DYNACONF", "  v2  ")
@@ -343,7 +388,7 @@ def test_variant_whitespace_is_stripped_before_building_paths(settings, put_para
 
 
 def test_tenant_and_prefix_whitespace_is_stripped(settings, put_params):
-    put_params({"/acme/tenants/tenant-a/production/api_key": "tenant-key"})
+    put_params({"/acme/production/tenants/tenant-a/default/api_key": "tenant-key"})
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", " acme ")
     settings.set("SSM_PARAMETER_TENANT_FOR_DYNACONF", " tenant-a ")
 
@@ -355,7 +400,7 @@ def test_tenant_and_prefix_whitespace_is_stripped(settings, put_params):
 
 
 def test_surrounding_slashes_on_prefix_are_tolerated(settings, put_params):
-    put_params({"/acme/app/production/api_key": "app-key"})
+    put_params({"/acme/production/app/default/api_key": "app-key"})
     settings.set("SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF", "/acme/")
 
     loader.load(settings, env="production")

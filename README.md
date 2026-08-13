@@ -5,10 +5,10 @@ applications that store secrets in AWS Systems Manager Parameter Store.
 
 ## Path contract
 
-    /<app-prefix>/app/<env>
-    /<app-prefix>/app/<variant>/<env>
-    /<app-prefix>/tenants/<tenant>/<env>
-    /<app-prefix>/tenants/<tenant>/<variant>/<env>
+    /<app-prefix>/<env>/app/default
+    /<app-prefix>/<env>/app/<variant>
+    /<app-prefix>/<env>/tenants/<tenant>/default
+    /<app-prefix>/<env>/tenants/<tenant>/<variant>
 
 Tiers are read in that order — least specific first — and **deep-merged**,
 so a more specific tier overrides a less specific one key by key rather
@@ -17,25 +17,36 @@ than wholesale.
 - The **app family** holds values shared by every tenant deployment.
 - The **tenant family** holds values specific to one tenant.
 - The optional **variant** segment is an opaque deployment discriminator
-  (e.g. an upstream API major version) interposed between the family and
-  the env. It applies to both families, so shared-but-variant-specific
-  values have a home.
+  (an upstream API major version, a PR review app, ...). It applies to
+  both families, so shared-but-variant-specific values have a home.
+- The **environment is the outermost segment** because it is the IAM
+  boundary: a role granted `/<app-prefix>/<env>/...` can read every
+  present and future variant tier without policy changes. Variants come
+  and go; grants do not.
+- The **`default` leaf is reserved** for the non-variant tier so that no
+  tier is a path-prefix of another. A recursive read of one tier can
+  therefore never swallow a sibling variant's parameters.
 - **Family is the dominant dimension**: a plain tenant value outranks an
   app-plus-variant value. Variant refines a family; it does not escape it.
 - A tier that does not exist is simply skipped, so a variant deployment
-  still inherits everything from the non-variant tenant and app tiers.
+  still inherits everything from the `default` tenant and app tiers.
 - Deeper segments become nested settings:
-  `/acme/app/production/database/host` → `settings.DATABASE.host`.
+  `/acme/production/app/default/database/host` → `settings.DATABASE.host`.
+
+> **Migrating from 1.x:** the 1.x contract
+> (`/<app-prefix>/app/[<variant>/]<env>`) is not read by this version.
+> Re-seed parameters under the new layout and update IAM policies; there
+> is no dual-read mode.
 
 ### Merge semantics
 
 Deep merge applies per key, at every depth. Given:
 
-    /acme/app/production/database/host                       = db.internal
-    /acme/app/production/database/port                       = @int 5432
-    /acme/app/production/database/pool/size                  = @int 5
-    /acme/tenants/tenant-a/production/database/host          = db.tenant-a.internal
-    /acme/tenants/tenant-a/v2/production/database/pool/size  = @int 20
+    /acme/production/app/default/database/host                      = db.internal
+    /acme/production/app/default/database/port                      = @int 5432
+    /acme/production/app/default/database/pool/size                 = @int 5
+    /acme/production/tenants/tenant-a/default/database/host         = db.tenant-a.internal
+    /acme/production/tenants/tenant-a/v2/database/pool/size         = @int 20
 
 a deployment with `tenant=tenant-a`, `variant=v2` resolves to:
 
@@ -53,15 +64,15 @@ override instead of extend.
 
 ### Variant naming
 
-A variant must be a single path segment and must not collide with an
-environment name or a structural segment, since
-`/acme/tenants/t/staging/production/...` is ambiguous with the `staging`
-env tier. The loader rejects, case-insensitively: `app`, `tenants`,
-`default`, `global`, `dev`, `development`, `stage`, `staging`, `prod`,
-`production`, `test`, `testing`, and the environment being loaded.
+A variant must be a single path segment and must not collide with the
+reserved `default` leaf or a structural segment. The loader rejects,
+case-insensitively: `default`, `app`, `tenants`. Anything else is fair
+game — with the environment ahead of the variant slot, environment
+names can no longer make a path ambiguous, so CI-generated names like
+`pr-1234` need no coordination with env naming.
 
-`SSM_PARAMETER_TENANT_VARIANT_FOR_DYNACONF` still requires
-`SSM_PARAMETER_TENANT_FOR_DYNACONF` to be set, even though it now also
+`SSM_PARAMETER_TENANT_VARIANT_FOR_DYNACONF` requires
+`SSM_PARAMETER_TENANT_FOR_DYNACONF` to be set, even though it also
 affects app-family paths — a variant is a property of a tenant
 deployment.
 
@@ -100,7 +111,6 @@ settings files) or in settings:
 | `SSM_ENDPOINT_URL_FOR_DYNACONF` | no | e.g. LocalStack |
 | `SSM_SESSION_FOR_DYNACONF` | no | Custom `boto3.session.Session` kwargs |
 
-
 All three path-segment settings are stripped of surrounding whitespace
 before use, and the normalized value is written back to the settings
 object so `settings.inspect()` agrees with the paths actually queried.
@@ -111,15 +121,14 @@ several (`acme/team-b`).
 ## Tenant isolation via IAM
 
 Each tenant deployment should run under its own IAM role (Lambda execution
-role, ECS task role, EC2 instance profile, etc.). Grant that role **only**:
-
-1. The app-family path for its environment.
-2. Its own tenant-family leaf path for its environment.
+role, ECS task role, EC2 instance profile, etc.), one per **(tenant,
+environment)** pair. Variants need no roles or policy changes of their
+own: the grants below cover the `default` leaf and every variant tier.
 
 ### Read policy template (per tenant, per environment)
 
-Substitute `<REGION>`, `<ACCOUNT_ID>`, `<APP_PREFIX>`, `<TENANT>`,
-`<VARIANT>` (omit the segment entirely if unused), and `<ENV>`:
+Substitute `<REGION>`, `<ACCOUNT_ID>`, `<APP_PREFIX>`, `<ENV>`, and
+`<TENANT>`:
 
 ```json
 {
@@ -133,12 +142,7 @@ Substitute `<REGION>`, `<ACCOUNT_ID>`, `<APP_PREFIX>`, `<TENANT>`,
                 "ssm:GetParameters",
                 "ssm:GetParametersByPath"
             ],
-            "Resource": [
-                "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<APP_PREFIX>/app/<ENV>",
-                "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<APP_PREFIX>/app/<ENV>/*",
-                "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<APP_PREFIX>/app/<VARIANT>/<ENV>",
-                "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<APP_PREFIX>/app/<VARIANT>/<ENV>/*"
-            ]
+            "Resource": "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<APP_PREFIX>/<ENV>/app/*"
         },
         {
             "Sid": "OwnTenantParametersOnly",
@@ -148,32 +152,29 @@ Substitute `<REGION>`, `<ACCOUNT_ID>`, `<APP_PREFIX>`, `<TENANT>`,
                 "ssm:GetParameters",
                 "ssm:GetParametersByPath"
             ],
-            "Resource": [
-                "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<APP_PREFIX>/tenants/<TENANT>/<ENV>",
-                "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<APP_PREFIX>/tenants/<TENANT>/<ENV>/*",
-                "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<APP_PREFIX>/tenants/<TENANT>/<VARIANT>/<ENV>",
-                "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<APP_PREFIX>/tenants/<TENANT>/<VARIANT>/<ENV>/*"
-            ]
+            "Resource": "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/<APP_PREFIX>/<ENV>/tenants/<TENANT>/*"
         }
     ]
 }
 ```
 
-Omit the `<VARIANT>` ARN pairs entirely if you do not use variants.
-
-Both the bare path and the `/*` glob are listed for each tier:
-`GetParametersByPath` authorizes against the path argument itself, while
-`GetParameter` on a child authorizes against the individual parameter ARN.
+A single glob per family suffices because every tier path — `default`
+and variants alike — nests strictly below `.../app` or
+`.../tenants/<TENANT>`. `GetParametersByPath` authorizes against the
+path argument (e.g. `/<APP_PREFIX>/<ENV>/app/default`), and
+`GetParameter` against the individual parameter ARN; both match the
+glob. Unlike bare parent-path grants, this glob is safe: it never
+crosses the tenant or environment boundary, because both sit *outside*
+it in the path.
 
 **Partial grants are fine.** The loader probes every tier in the
-contract, so a role scoped to a subset will see `AccessDeniedException`
-on the rest. Those denials are logged at `WARNING` and skipped — they
-never fail the load, even with `silent=False`, since with four tiers a
-narrow grant is the normal case rather than a misconfiguration. Genuine
-errors (throttling, connectivity) still propagate when `silent=False`.
-Denials are indistinguishable from absent tiers in effect, so if a value
-mysteriously fails to appear, check the warnings before checking the
-parameter names.
+contract, so a role scoped narrower than the template (e.g. app-family
+only) will see `AccessDeniedException` on the rest. Those denials are
+logged at `WARNING` and skipped — they never fail the load, even with
+`silent=False`. Genuine errors (throttling, connectivity) still
+propagate when `silent=False`. Denials are indistinguishable from
+absent tiers in effect, so if a value mysteriously fails to appear,
+check the warnings before checking the parameter names.
 
 Note also that a configured variant doubles the number of
 `GetParametersByPath` calls per load, from two to four.
@@ -237,27 +238,28 @@ This principal must not be assumable by tenant runtime roles.
 
 ### Warnings
 
-- **Never grant a runtime role `/<APP_PREFIX>` or
-  `/<APP_PREFIX>/tenants`.** SSM path permissions are hierarchical: a
-  principal allowed to read a parent path can read *all* descendants
-  via recursive `GetParametersByPath`, and an explicit `Deny` on a
-  child does not reliably block enumeration through an allowed parent.
-  Always allow-list leaf paths only, as in the template above.
+- **Never grant a runtime role `/<APP_PREFIX>`, `/<APP_PREFIX>/<ENV>`,
+  or `/<APP_PREFIX>/<ENV>/tenants`.** SSM path permissions are
+  hierarchical: a principal allowed to read a parent path can read
+  *all* descendants via recursive `GetParametersByPath`, and an
+  explicit `Deny` on a child does not reliably block enumeration
+  through an allowed parent. The template's two globs are the widest
+  safe grants.
+- If multiple environments share one AWS account, the `<ENV>` segment
+  is what separates them. It is the outermost segment precisely so
+  that the per-tenant glob above cannot cross it: a production role
+  granted `<ENV>=production` cannot read `staging` parameters, and
+  vice versa.
 - Tenant and environment names become IAM resource ARN segments. Keep
   them to `a-z0-9-`, and never derive them from untrusted input. The
   loader rejects whitespace outright, since a stray space desyncs the
   path from the grant and surfaces as an empty load rather than an
   authorization error — but it does not police the rest of the
   character set.
-- If multiple environments share one AWS account, the `<ENV>` segment
-  in the resource ARN is what separates them — a production role
-  granted `<ENV>=production` cannot read `staging` parameters, and
-  vice versa.
-- **Never grant a runtime role `/<APP_PREFIX>/tenants/<TENANT>`** (the
-  bare tenant path, without an env or variant segment). Recursive reads
-  from there cross environment boundaries, defeating the `<ENV>`
-  separation described above.
-
+- Variants are **not** a security boundary: any code running under a
+  (tenant, env) role can read every variant's parameters for that
+  tenant and env. If variants are PR review apps executing unreviewed
+  code, be deliberate about what the shared `default` tiers contain.
 
 ## Development
 

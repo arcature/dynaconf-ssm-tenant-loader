@@ -1,16 +1,22 @@
 """
-Custom Dynaconf loader for multi-tenant configuration in AWS Systems
-Manager Parameter Store.
+Custom Dynaconf loader for multi-tenant configuration in AWS Systems Manager
+Parameter Store.
 
 Path contract (least to most specific):
 
-    /<app-prefix>/app/<env>
-    /<app-prefix>/app/<variant>/<env>
-    /<app-prefix>/tenants/<tenant>/<env>
-    /<app-prefix>/tenants/<tenant>/<variant>/<env>
+    /<app-prefix>/<env>/app/default
+    /<app-prefix>/<env>/app/<variant>
+    /<app-prefix>/<env>/tenants/<tenant>/default
+    /<app-prefix>/<env>/tenants/<tenant>/<variant>
 
-Tiers are loaded in that order and deep-merged, so more specific tiers
-override less specific ones key by key.
+Tiers are loaded in that order and deep-merged, so more specific tiers override
+less specific ones key by key.
+
+The environment is the outermost segment because it is the IAM boundary: a role
+granted ``/<app-prefix>/<env>/...`` paths can read every variant tier without
+policy changes when variants come and go.  The ``default`` leaf exists so that
+no tier is a path-prefix of another, keeping recursive reads of one tier from
+swallowing its sibling variants.
 """
 
 from __future__ import annotations
@@ -36,25 +42,13 @@ APP_PREFIX_KEY = "SSM_PARAMETER_APP_PREFIX_FOR_DYNACONF"
 TENANT_KEY = "SSM_PARAMETER_TENANT_FOR_DYNACONF"
 VARIANT_KEY = "SSM_PARAMETER_TENANT_VARIANT_FOR_DYNACONF"
 
-#: Names a variant may not take, because they would collide with a
-#: structural segment or with an environment tier and make a path
-#: ambiguous under recursive reads.
-RESERVED_VARIANT_NAMES = frozenset(
-    {
-        "app",
-        "tenants",
-        "default",
-        "global",
-        "dev",
-        "development",
-        "stage",
-        "staging",
-        "prod",
-        "production",
-        "test",
-        "testing",
-    }
-)
+#: Names a variant may not take: ``default`` is the reserved
+#: non-variant leaf, and ``app``/``tenants`` are structural segments.
+#
+#: Anything else is fair game — with the environment ahead of the
+#: variant slot in the path, env names can no longer make a path
+#: ambiguous.
+RESERVED_VARIANT_NAMES = frozenset({"default", "app", "tenants"})
 
 #: Client error codes treated as "this tier is simply not available to
 #: me", rather than as a failure, even when ``silent=False``. With four
@@ -70,28 +64,23 @@ def get_client(obj) -> SSMClient:
     return session.client(service_name="ssm", endpoint_url=endpoint_url)
 
 
-def validate_variant(variant: str, env_name: str) -> None:
+def validate_variant(variant: str) -> None:
     """
-    Reject a variant that would produce an ambiguous path.
+    Reject a variant that would collide with a reserved path segment.
 
     Assumes ``variant`` has already been normalized by
     :func:`~dynaconf_ssm_tenant_loader.util.normalize_path_segment`.
 
     :param variant: the configured variant segment
-    :param env_name: the environment currently being loaded, lowercased
-    :raises ValueError: if the variant collides with an environment or
-        structural path segment
+    :raises ValueError: if the variant collides with the reserved
+        ``default`` leaf or a structural path segment
     """
 
-    normalized = variant.lower()
-
-    if normalized == env_name or normalized in RESERVED_VARIANT_NAMES:
+    if variant.lower() in RESERVED_VARIANT_NAMES:
         raise ValueError(
-            f"{VARIANT_KEY}={variant!r} collides with an environment or"
-            " structural path segment, which would make the parameter"
-            " path ambiguous under a recursive read. Choose a variant"
-            " name that is not one of"
-            f" {sorted(RESERVED_VARIANT_NAMES | {env_name})}."
+            f"{VARIANT_KEY}={variant!r} collides with a reserved path"
+            " segment. Choose a variant name that is not one of"
+            f" {sorted(RESERVED_VARIANT_NAMES)}."
         )
 
 
@@ -109,17 +98,17 @@ def build_paths(
     app-plus-variant value.
     """
 
-    families = [[app_prefix, "app"]]
+    families = [[app_prefix, env_name, "app"]]
 
     if tenant is not None:
-        families.append([app_prefix, "tenants", tenant])
+        families.append([app_prefix, env_name, "tenants", tenant])
 
     paths = []
 
     for family in families:
-        paths.append("/" + "/".join([*family, env_name]))
+        paths.append("/" + "/".join([*family, "default"]))
         if variant is not None:
-            paths.append("/" + "/".join([*family, variant, env_name]))
+            paths.append("/" + "/".join([*family, variant]))
 
     return paths
 
@@ -162,10 +151,10 @@ def load(
             " variant is only meaningful alongside a tenant."
         )
 
-    env_name = (env or obj.current_env).strip().lower()
+    env_name = normalize_path_segment("env", (env or obj.current_env)).lower()
 
     if variant is not None:
-        validate_variant(variant, env_name)
+        validate_variant(variant)
 
         # `pull_from_env_or_obj` from above may have stored the raw value, which
         # no longer matches the paths used, so store the normalized value back
